@@ -9,14 +9,10 @@ Benchmarks three progressive optimisation levels for CPU inference of
 | 2 | ONNX Runtime (`ORT_ENABLE_ALL`) | 8001 |
 | 3 | Dynamic batching over ONNX | 8002 |
 
----
-
 ## Requirements
 
 - Python **3.10+**
 - CPU only (no CUDA needed)
-
----
 
 ## Setup
 
@@ -35,8 +31,6 @@ pip install -r benchmark/requirements.txt
 pip install onnx                                     # required for ONNX export in part 2
 ```
 
----
-
 ## Step-by-step Reproduction
 
 ### 1 — Baseline (PyTorch)
@@ -53,8 +47,6 @@ cd mlops_hw
 python benchmark/run_benchmark.py --part 1
 # results saved to results/part1_baseline.json
 ```
-
----
 
 ### 2 — ONNX
 
@@ -76,8 +68,6 @@ python benchmark/run_benchmark.py --part 2
 # results saved to results/part2_onnx.json
 ```
 
----
-
 ### 3 — Dynamic Batching
 
 The ONNX model must already exist (run step 2a above).
@@ -93,8 +83,6 @@ python benchmark/run_benchmark.py --part 3
 # results saved to results/part3_dynamic_batching.json
 ```
 
----
-
 ### All Parts at Once
 
 Start all three services in separate terminals, then:
@@ -103,8 +91,6 @@ python benchmark/run_benchmark.py --part all
 ```
 The script prints a side-by-side comparison after each run.
 
----
-
 ## Quick Smoke Test
 
 ```bash
@@ -112,8 +98,6 @@ curl -s -X POST http://localhost:8000/embed \
      -H "Content-Type: application/json" \
      -d '{"texts": ["Привет, мир!", "Hello world"]}' | python -m json.tool
 ```
-
----
 
 ## Project Layout
 
@@ -132,13 +116,11 @@ mlops_hw/
 ├── benchmark/
 │   ├── run_benchmark.py    Measures latency / throughput / resources
 │   └── requirements.txt
-├── models/                 ONNX model stored here (generated)
-├── results/                JSON benchmark outputs (generated)
+├── models/                 ONNX model stored here
+├── results/                JSON benchmark outputs 
 ├── REPORT.md
 └── README.md
 ```
-
----
 
 ## Benchmark Metrics Explained
 
@@ -149,7 +131,7 @@ mlops_hw/
 | System CPU % | Compute cost per request burst |
 | Client RSS MB | Memory footprint of the benchmark process |
 
-Latency is measured **sequentially** (one request at a time) to isolate true
-service processing time from queuing effects.  Throughput is measured with
-**16 concurrent workers** to saturate the service and — for Part 3 — to
+Latency is measured sequentially (one request at a time) to isolate true
+service processing time from queuing effects.  
+Throughput is measured with 16 concurrent workers to saturate the service and for Part 3 to
 actually trigger the batching mechanism.

@@ -1,92 +1,83 @@
-# Report — Embedding Inference Pipeline Optimisation
+# Отчёт — Оптимизация пайплайна инференса эмбеддингов
 
-Model: `cointegrated/rubert-tiny2` · Hardware: CPU only · Framework: FastAPI + uvicorn
+Модель: `cointegrated/rubert-tiny2` · Оборудование: только CPU · Фреймворк: FastAPI + uvicorn
 
----
+## 1. Методология
 
-## 1. Methodology
+### Почему именно эти метрики?
 
-### Why these metrics?
+| Метрика | Обоснование |
+|---------|-------------|
+| **Latency p50** | Медианное время ответа — то, что ощущает большинство пользователей |
+| **Latency p95 / p99** | Хвостовая задержка — отражает поведение в худшем случае; системы часто ограничены самым медленным перцентилем |
+| **Throughput (req/s)** | Пропускная способность под нагрузкой; определяет требования к горизонтальному масштабированию |
+| **CPU %** | Вычислительные затраты на всплеск запросов; показывает, является ли CPU узким местом |
+| **Memory (RSS)** | Базовый объём памяти; важен для определения размера контейнера |
 
-| Metric | Rationale |
-|--------|-----------|
-| **Latency p50** | Median user experience — what most requests feel like |
-| **Latency p95 / p99** | Tail latency — reflects worst-case SLA behaviour; systems are often limited by their slowest percentile |
-| **Throughput (req/s)** | Service capacity under concurrent load; determines horizontal scaling requirements |
-| **CPU %** | Compute cost per burst; signals whether CPU is the bottleneck or whether idle headroom exists |
-| **Memory (RSS)** | Baseline resource footprint; important for container sizing |
+### Протокол измерений
 
-### Measurement protocol
+- **Latency**: 100 последовательных HTTP POST запросов к `/embed` после разогрева (10 запросов). Последовательность устраняет шум очередей.
+- **Throughput**: 200 запросов через 16 параллельных потоков. Высокий уровень конкурентности нужен для насыщения сервиса и — в части 3 — для активации механизма динамической батчинга.
+- **Ресурсы**: CPU измеряется через `psutil.cpu_percent()`, RSS — через `psutil.Process.memory_info()` во время всплеска из 20 запросов.
+- **Размеры батчей**: 1, 8, 32 текста на запрос.
 
-- **Latency**: 100 sequential HTTP POST requests to `/embed` after a 10-request warm-up. Sequential isolation removes queuing noise.
-- **Throughput**: 200 requests via 16 concurrent threads. Concurrency is deliberately high to saturate the service and — in Part 3 — to trigger the dynamic-batching mechanism.
-- **Resources**: CPU sampled with `psutil.cpu_percent()` and RSS with `psutil.Process.memory_info()` during a 20-request burst.
-- **Batch sizes tested**: 1, 8, 32 texts per request.
+## 2. Результаты
 
----
+### Часть 1 — Baseline PyTorch (порт 8000)
 
-## 2. Results
+| Батч | p50 (мс) | p95 (мс) | p99 (мс) | Throughput (req/s) | CPU (%) | RSS (МБ) |
+|-----:|---------:|---------:|---------:|-------------------:|--------:|---------:|
+|    1 |     4.22 |     5.36 |     5.61 |             258.96 |    10.0 |    33.34 |
+|    8 |     10.4 |    12.49 |    13.16 |             150.19 |    10.0 |    34.38 |
+|   32 |    30.32 |    34.05 |    35.14 |              58.85 |   44.44 |    37.64 |
 
-### Part 1 — Baseline PyTorch (port 8000)
+### Часть 2 — ONNX Runtime / ORT_ENABLE_ALL (порт 8001)
 
-| Batch | p50 (ms) | p95 (ms) | p99 (ms) | Throughput (req/s) | CPU (%) | RSS (MB) |
-|------:|---------:|---------:|---------:|-------------------:|--------:|---------:|
-|     1 |     4.22 |     5.36 |     5.61 |             258.96 |    10.0 |    33.34 |
-|     8 |     10.4 |    12.49 |    13.16 |             150.19 |    10.0 |    34.38 |
-|    32 |    30.32 |    34.05 |    35.14 |              58.85 |   44.44 |    37.64 |
+| Батч | p50 (мс) | p95 (мс) | p99 (мс) | Throughput (req/s) | CPU (%) | RSS (МБ) |
+|-----:|---------:|---------:|---------:|-------------------:|--------:|---------:|
+|    1 |     3.07 |     4.67 |     5.34 |             674.56 |   10.84 |    37.64 |
+|    8 |     7.96 |     9.60 |     9.89 |             211.09 |   20.77 |    37.64 |
+|   32 |    22.54 |    23.40 |    27.16 |              63.65 |   17.90 |    38.39 |
 
-### Part 2 — ONNX Runtime / ORT_ENABLE_ALL (port 8001)
+### Часть 3 — Динамический батчинг поверх ONNX (порт 8002)
 
-| Batch | p50 (ms) | p95 (ms) | p99 (ms) | Throughput (req/s) | CPU (%) | RSS (MB) |
-|------:|---------:|---------:|---------:|-------------------:|--------:|---------:|
-|     1 |     3.07 |     4.67 |     5.34 |             674.56 |   10.84 |    37.64 |
-|     8 |     7.96 |     9.60 |     9.89 |             211.09 |   20.77 |    37.64 |
-|    32 |    22.54 |    23.40 |    27.16 |              63.65 |   17.90 |    38.39 |
+| Батч | p50 (мс) | p95 (мс) | p99 (мс) | Throughput (req/s) | CPU (%) | RSS (МБ) |
+|-----:|---------:|---------:|---------:|-------------------:|--------:|---------:|
+|    1 |     25.0 |    25.43 |    25.90 |             361.76 |    4.11 |    38.50 |
+|    8 |     30.2 |    32.52 |    39.52 |             182.89 |    9.54 |    38.50 |
+|   32 |    22.43 |    23.58 |    25.55 |              47.68 |   14.14 |    38.56 |
 
-### Part 3 — Dynamic Batching over ONNX (port 8002)
+## 3. Анализ
 
-| Batch | p50 (ms) | p95 (ms) | p99 (ms) | Throughput (req/s) | CPU (%) | RSS (MB) |
-|------:|---------:|---------:|---------:|-------------------:|--------:|---------:|
-|     1 |     25.0 |    25.43 |    25.90 |             361.76 |    4.11 |    38.50 |
-|     8 |     30.2 |    32.52 |    39.52 |             182.89 |    9.54 |    38.50 |
-|    32 |    22.43 |    23.58 |    25.55 |              47.68 |   14.14 |    38.56 |
+### Часть 1 → Часть 2: PyTorch vs ONNX Runtime
 
----
+**Что изменилось**: модель один раз конвертируется в статический граф ONNX и выполняется через ORT с `ORT_ENABLE_ALL` — это включает свёртку констант, слияние операторов и преобразования layout во время инициализации сессии.
 
-## 3. Analysis
+**Наблюдаемые улучшения**:
+- **Latency**: p50 снизился на ~27% при батче=1 (4.2 → 3.1 мс), на ~26% при батче=32. Прирост обусловлен слиянием ядер и устранением накладных расходов Python-диспетчеризации.
+- **Throughput**: +160% при батче=1 (259 → 675 req/s), +40% при батче=8. Разрыв сокращается при батче=32 (+8%), так как доминирует вычислительная нагрузка.
+- **CPU**: сопоставим на малых батчах; заметно ниже при батче=32 (18% против 44%) — ORT выполняет ту же работу эффективнее.
 
-### Part 1 → Part 2: PyTorch vs ONNX Runtime
+### Часть 2 → Часть 3: Статический ONNX vs Динамический батчинг
 
-**What changed**: The model is converted once to a static ONNX graph and executed by ORT with `ORT_ENABLE_ALL` — which enables constant folding, operator fusion, and layout transformations at session initialisation time.
+**Что изменилось**: очередь asyncio + фоновый воркер собирает входящие запросы до 20 мс или до накопления 32 текстов, затем выполняет **один** батчированный вызов ONNX и возвращает результаты.
 
-**Observed improvements**:
-- **Latency**: ~27% lower p50 at batch=1 (4.2 → 3.1 ms), ~26% at batch=32. Gains come from fused kernels and elimination of Python-level dispatch overhead.
-- **Throughput**: +160% at batch=1 (259 → 675 req/s), +40% at batch=8. The gap narrows at batch=32 (+8%) as compute dominates over dispatch overhead.
-- **CPU**: Comparable at small batches; notably lower at batch=32 (18% vs 44%) — ORT executes the same work more efficiently.
+**Наблюдаемые результаты**:
+- **Latency при батче=1**: выросла до ~25 мс (+714% к ONNX) из-за окна ожидания 20 мс — ожидаемый компромисс динамического батчинга.
+- **Throughput при батче=1**: 362 req/s — ниже ONNX (675), но +40% к baseline, так как параллельные запросы объединяются.
+- **Latency при батче=32**: практически идентична ONNX (22.4 vs 22.5 мс p50) — механизм батчинга полностью поглотил накладные расходы.
+- **CPU**: значительно ниже на всех размерах батчей (4–14% против 11–18% у ONNX) — меньше вызовов инференса означает меньше общих вычислений.
 
-### Part 2 → Part 3: Static ONNX vs Dynamic Batching
+**Когда динамический батчинг вреден**: малонагруженные сценарии, где запросы редко поступают одновременно. В таком режиме каждый запрос платит штраф 20 мс ожидания без какой-либо выгоды.
 
-**What changed**: An asyncio queue + background worker collects incoming requests for up to 20 ms or until 32 texts are accumulated, then runs a **single** batched ONNX call and fans results back.
+## 4. Выводы
 
-**Observed results**:
+1. **Экспорт в ONNX — минимум усилий, максимум результата**: однократная конвертация модели существенно снижает задержку на запрос без изменений API сервиса или инфраструктуры.
 
-- **Single-request latency (batch=1)**: Increased to ~25 ms (+714% vs ONNX) due to the 20 ms wait window — the expected trade-off of dynamic batching.
-- **Throughput at batch=1**: 362 req/s — lower than ONNX (675) but +40% over baseline, since concurrent requests get merged.
-- **Batch=32 latency**: Nearly identical to ONNX (22.4 vs 22.5 ms p50) — the batching mechanism has fully absorbed the overhead at this load level.
-- **CPU**: Significantly lower across all batch sizes (4–14% vs 11–18% for ONNX) — fewer inference calls means less total compute.
+2. **Динамический батчинг смещает компромисс latency/throughput**: оптимален, когда система обслуживает много одновременных пользователей и приоритет — пропускная способность. Для latency-чувствительных сценариев с низким трафиком предпочтителен статический ONNX.
 
-**When dynamic batching hurts**: Low-concurrency workloads where requests rarely overlap. In that regime, every request pays the 20 ms wait penalty for no benefit.
+3. **Хвостовая задержка важнее средней**: системы для реальных пользователей должны оптимизировать p95/p99. ONNX снижает дисперсию; динамический батчинг с жёстким ограничением `max_wait_ms` делает верхнюю границу предсказуемой.
 
----
+4. **CPU остаётся узким местом**: все три подхода работают на одном воркере uvicorn и по сути однопоточны для инференса. Следующий шаг оптимизации — многопроцессный запуск uvicorn (`--workers N`) или переход на специализированный фреймворк (TorchServe, Triton Inference Server).
 
-## 4. Conclusions
-
-1. **ONNX export is low-effort, high-reward**: A one-time model conversion reduces per-request latency significantly with no change to service API or infrastructure.
-
-2. **Dynamic batching shifts the latency/throughput trade-off**: It is the right choice when the system needs to serve many concurrent users and throughput is the primary concern. For latency-sensitive, low-traffic deployments, static ONNX is preferable.
-
-3. **Tail latency matters more than mean**: Systems serving real users should optimise p95/p99. ONNX reduces variance; dynamic batching with a tight `max_wait_ms` cap keeps the upper bound predictable.
-
-4. **CPU bottleneck persists**: All three approaches run on a single uvicorn worker and are fundamentally single-threaded for inference. The next optimisation step would be multi-process uvicorn workers (`--workers N`) or moving to a dedicated model-serving framework (TorchServe, Triton Inference Server) that manages thread pools automatically.
-
-5. **Memory is not the binding constraint**: For this model size (~29 M parameters, ~115 MB float32), memory footprint is well within typical container limits. Quantisation (INT8 / FP16) would reduce it further and also accelerate ONNX inference by 1.3–2× on modern CPUs with AVX-512 VNNI support.
+5. **Память не является ограничивающим фактором**: для данного размера модели (~29M параметров) объём памяти вполне вписывается в типичные лимиты контейнера. Квантизация (INT8 / FP16) дополнительно сократит его и ускорит ONNX-инференс в 1.3–2× на современных CPU с поддержкой AVX-512 VNNI.
